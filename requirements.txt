@@ -2,4 +2,5 @@ Flask
 flask-cors
 mysql-connector-python
 requests
+supabase
 gunicorn
