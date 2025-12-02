@@ -98,14 +98,24 @@ def ai_fallback(user_message):
                     {"role": "user", "content": user_message},
                 ],
             },
+            timeout=15,
         )
 
-        result = res.json()
-        return result["choices"][0]["message"]["content"]
+        # Log raw for debugging
+        print("[ai_fallback] status:", getattr(res, "status_code", None))
+        try:
+            print("[ai_fallback] raw:", res.text[:2000])
+        except:
+            pass
 
+        result = res.json()
+        content = result.get("choices", [{}])[0].get("message", {}).get("content")
+        return content or "Xin lỗi, tôi không thể trả lời câu hỏi này."
     except Exception as e:
         print("AI error:", e)
+        traceback.print_exc()
         return "Xin lỗi, tôi không thể trả lời câu hỏi này."
+
     
 # -------------------------
 # Robust FAQ generator
@@ -125,7 +135,7 @@ Decide if this should be added as a new FAQ entry.
 
 RULES:
 - Only add if the question is useful for many users.
-- Do NOT add greetings, spam, personal data, or jokes.
+- Do NOT add greetings, spam, personal data, emoji if unnecessary or jokes.
 - Keep the answer short (1-2 sentences).
 - Output JSON only (no extra commentary).
 
@@ -209,59 +219,79 @@ Return JSON exactly like:
 
 def try_load_json_from_text(text):
     """
-    Try to find and load a JSON object inside `text`.
-    Returns dict or None.
+    Extract the first valid JSON object from text.
     """
-    import re
-    # find first {...} that looks like JSON
-    matches = re.findall(r"\{(?:[^{}]|(?R))*\}", text, flags=re.DOTALL)
-    for m in matches:
-        try:
-            return json.loads(m)
-        except Exception:
-            # try to fix common mistakes (single quotes -> double quotes)
-            try:
-                fixed = m.replace("'", "\"")
-                return json.loads(fixed)
-            except Exception:
-                continue
-    # final attempt: direct json.loads
-    try:
-        return json.loads(text)
-    except Exception:
+    import json
+
+    start = text.find("{")
+    if start == -1:
         return None
 
+    # tìm dấu ngoặc đóng phù hợp
+    depth = 0
+    for i in range(start, len(text)):
+        if text[i] == "{":
+            depth += 1
+        elif text[i] == "}":
+            depth -= 1
+            if depth == 0:
+                candidate = text[start:i+1]
+                try:
+                    return json.loads(candidate)
+                except:
+                    # thử sửa lỗi trích dẫn
+                    try:
+                        candidate_fixed = candidate.replace("'", "\"")
+                        return json.loads(candidate_fixed)
+                    except:
+                        return None
+
+    return None
 
 # -------------------------
 # Safe insert with check
 # -------------------------
 def auto_insert_faq(q, a):
     """
-    Insert but return the Supabase response (and print error if any).
-    Make sure you're using a SUPABASE service_role key on the server.
+    Robust insert with verbose debug. Returns dict:
+    { success: bool, data:..., error: "text" }
     """
     if not q or not a:
         print("[auto_insert_faq] Empty question or answer; skipping insert.")
         return {"success": False, "error": "empty"}
 
     try:
+        # Attempt insert
         res = supabase.table("faq").insert({"question": q, "answer": a}).execute()
-        # Some supabase client libs return a dict-like res with .data and .error
-        # Print both for debugging.
-        print("[auto_insert_faq] insert response:", getattr(res, "data", None), getattr(res, "error", None))
-        # Interpret success
-        if hasattr(res, "error") and res.error:
-            return {"success": False, "error": res.error}
-        # If using a dict return:
+
+        # Many supabase python clients return an object with .data and .error
+        data = getattr(res, "data", None)
+        error = getattr(res, "error", None)
+
+        # If res is a dict (some clients)
         if isinstance(res, dict):
-            if res.get("error"):
-                return {"success": False, "error": res.get("error")}
-            return {"success": True, "data": res.get("data")}
-        return {"success": True, "data": getattr(res, "data", None)}
+            data = res.get("data", None)
+            error = res.get("error", None)
+            # Some libs return status
+            status = res.get("status_code") or res.get("status")
+        else:
+            # Try extract status_code / text if available
+            status = getattr(res, "status_code", None)
+            text = getattr(res, "text", None)
+
+        # Log verbose
+        print("[auto_insert_faq] raw_response:", {"data": data, "error": error, "status": status})
+
+        if error:
+            return {"success": False, "error": str(error)}
+
+        # If data empty or None, still consider printing for debugging
+        return {"success": True, "data": data}
     except Exception as e:
         print("[auto_insert_faq] exception:", e)
         traceback.print_exc()
         return {"success": False, "error": str(e)}
+    
 # ---------------------------------------------------
 # SAVE CHAT HISTORY
 # ---------------------------------------------------
