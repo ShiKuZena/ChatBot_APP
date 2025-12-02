@@ -285,15 +285,34 @@ def chat():
     if not msg:
         return jsonify({"error": "message is required"}), 400
 
+    # 1. Try match FAQ
     answer = search_faq(msg)
 
+    # 2. AI fallback
     if not answer:
         answer = ai_fallback(msg)
 
+    # 3. Save history
     save_history(session_id, msg, answer)
 
-    return jsonify({"reply": answer})
+    # -----------------------------------------
+    # 4. 🔥 SELF-LEARNING — Generate new FAQ
+    # -----------------------------------------
+    try:
+        gen = ai_generate_new_faq(msg, answer)
 
+        print("[auto-learning]", gen)  # Debug log
+
+        if gen.get("is_new_faq") and gen.get("question") and gen.get("answer"):
+            insert_result = auto_insert_faq(gen["question"], gen["answer"])
+            print("[FAQ INSERT RESULT]", insert_result)
+        else:
+            print("[auto-learning] No new FAQ added")
+    except Exception as e:
+        print("[auto-learning-error]", e)
+    # -----------------------------------------
+
+    return jsonify({"reply": answer})
 
 # ---------------------------------------------------
 # ADMIN: ADD FAQ
