@@ -6,6 +6,8 @@ from flask_cors import CORS
 import requests
 import re
 import json
+import time
+import traceback
 
 from supabase import create_client
 from config import SUPABASE_URL, SUPABASE_KEY, OPENROUTER_API_KEY, MODEL
@@ -105,12 +107,17 @@ def ai_fallback(user_message):
         print("AI error:", e)
         return "Xin lỗi, tôi không thể trả lời câu hỏi này."
     
-# ---------------------------------------------------
-# SELF-LEARNING: Generate new FAQ
-# ---------------------------------------------------
-def ai_generate_new_faq(user_msg, bot_answer):
-    try:
-        prompt = f"""
+# -------------------------
+# Robust FAQ generator
+# -------------------------
+def ai_generate_new_faq(user_msg, bot_answer, max_tries=2):
+    """
+    Ask OpenRouter to decide whether to make a new FAQ.
+    This function is robust to model text (tries to extract JSON),
+    logs raw responses for debugging, and returns a dict with keys:
+    { "is_new_faq": bool, "question": str, "answer": str, "raw": str }
+    """
+    prompt = f"""
 User asked: {user_msg}
 Bot answered: {bot_answer}
 
@@ -118,56 +125,143 @@ Decide if this should be added as a new FAQ entry.
 
 RULES:
 - Only add if the question is useful for many users.
-- No spam, personal info, greetings, jokes.
-- Keep answer short and factual.
-- Output ONLY JSON.
+- Do NOT add greetings, spam, personal data, or jokes.
+- Keep the answer short (1-2 sentences).
+- Output JSON only (no extra commentary).
 
 Return JSON exactly like:
-{{
-  "is_new_faq": true/false,
-  "question": "cleaned question",
-  "answer": "clean, short answer"
-}}
+{{"is_new_faq": true/false, "question": "clean question", "answer": "short answer"}}
 """
 
-        res = requests.post(
-            "https://openrouter.ai/api/v1/chat/completions",
-            headers={
-                "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-                "Content-Type": "application/json",
-            },
-            json={
-                "model": MODEL,
-                "messages": [
-                    {"role": "system", "content": "You generate structured JSON only."},
-                    {"role": "user", "content": prompt},
-                ],
-            },
-        )
+    for attempt in range(1, max_tries + 1):
+        try:
+            res = requests.post(
+                "https://openrouter.ai/api/v1/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": MODEL,
+                    "messages": [
+                        {"role": "system", "content": "You generate structured JSON only."},
+                        {"role": "user", "content": prompt},
+                    ],
+                    "temperature": 0.0,
+                    "max_tokens": 400,
+                },
+                timeout=15,
+            )
+        except Exception as e:
+            print(f"[ai_generate_new_faq] Request error (attempt {attempt}):", e)
+            traceback.print_exc()
+            time.sleep(1)
+            continue
 
-        raw = res.json()["choices"][0]["message"]["content"]
+        # Log status & raw text for debugging
+        status = getattr(res, "status_code", None)
+        text = ""
+        try:
+            text = res.text
+        except:
+            text = "<no text>"
+        print(f"[ai_generate_new_faq] status={status} attempt={attempt} raw={text[:1000]}")
 
-        return json.loads(raw)
+        # Try to parse JSON from the response in multiple ways
+        parsed = None
+        # 1) If API returned JSON structure
+        try:
+            j = res.json()
+            # common path: choices[0].message.content
+            content = j.get("choices", [{}])[0].get("message", {}).get("content")
+            if content:
+                parsed = try_load_json_from_text(content)
+        except Exception as e:
+            # not fatal; continue attempts to extract
+            pass
 
-    except Exception as e:
-        print("FAQ generation error:", e)
-        return {"is_new_faq": False}
+        # 2) Fallback: try to extract JSON substring from raw text
+        if parsed is None:
+            parsed = try_load_json_from_text(text)
+
+        if parsed is None:
+            print("[ai_generate_new_faq] Failed to parse JSON from model response.")
+            # If last attempt, return safe false with raw for inspection
+            if attempt == max_tries:
+                return {"is_new_faq": False, "question": "", "answer": "", "raw": text}
+            time.sleep(0.7)
+            continue
+
+        # Ensure keys exist and clean strings
+        is_new = bool(parsed.get("is_new_faq") or parsed.get("is_new"))
+        q = parsed.get("question") or parsed.get("q") or ""
+        a = parsed.get("answer") or parsed.get("a") or ""
+
+        # sanitize
+        q = q.strip()
+        a = a.strip()
+
+        return {"is_new_faq": is_new, "question": q, "answer": a, "raw": text}
+
+    # fallback
+    return {"is_new_faq": False, "question": "", "answer": "", "raw": ""}
 
 
-# ---------------------------------------------------
-# AUTO INSERT FAQ
-# ---------------------------------------------------
-def auto_insert_faq(q, a):
+def try_load_json_from_text(text):
+    """
+    Try to find and load a JSON object inside `text`.
+    Returns dict or None.
+    """
+    import re
+    # find first {...} that looks like JSON
+    matches = re.findall(r"\{(?:[^{}]|(?R))*\}", text, flags=re.DOTALL)
+    for m in matches:
+        try:
+            return json.loads(m)
+        except Exception:
+            # try to fix common mistakes (single quotes -> double quotes)
+            try:
+                fixed = m.replace("'", "\"")
+                return json.loads(fixed)
+            except Exception:
+                continue
+    # final attempt: direct json.loads
     try:
-        supabase.table("faq").insert({
-            "question": q,
-            "answer": a
-        }).execute()
-        print("AUTO FAQ: Added ->", q)
+        return json.loads(text)
+    except Exception:
+        return None
+
+
+# -------------------------
+# Safe insert with check
+# -------------------------
+def auto_insert_faq(q, a):
+    """
+    Insert but return the Supabase response (and print error if any).
+    Make sure you're using a SUPABASE service_role key on the server.
+    """
+    if not q or not a:
+        print("[auto_insert_faq] Empty question or answer; skipping insert.")
+        return {"success": False, "error": "empty"}
+
+    try:
+        res = supabase.table("faq").insert({"question": q, "answer": a}).execute()
+        # Some supabase client libs return a dict-like res with .data and .error
+        # Print both for debugging.
+        print("[auto_insert_faq] insert response:", getattr(res, "data", None), getattr(res, "error", None))
+        # Interpret success
+        if hasattr(res, "error") and res.error:
+            return {"success": False, "error": res.error}
+        # If using a dict return:
+        if isinstance(res, dict):
+            if res.get("error"):
+                return {"success": False, "error": res.get("error")}
+            return {"success": True, "data": res.get("data")}
+        return {"success": True, "data": getattr(res, "data", None)}
     except Exception as e:
-        print("Auto insert FAQ error:", e)
-
-
+        print("[auto_insert_faq] exception:", e)
+        traceback.print_exc()
+        return {"success": False, "error": str(e)}
 # ---------------------------------------------------
 # SAVE CHAT HISTORY
 # ---------------------------------------------------
