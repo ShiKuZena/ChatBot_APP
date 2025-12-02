@@ -272,6 +272,49 @@ def save_history(session_id, user_msg, bot_reply):
         "bot_reply": bot_reply
     }).execute()
 
+def detect_language(text):
+    try:
+        res = requests.post(
+            "https://openrouter.ai/api/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+                "Content-Type": "application/json"
+            },
+            json={
+                "model": MODEL,
+                "messages": [
+                    {"role": "system", "content": "Detect the input language. Only output a short language code (vi, en, zh, es, ja...)."},
+                    {"role": "user", "content": text}
+                ]
+            }
+        )
+        lang = res.json()["choices"][0]["message"]["content"].strip().lower()
+        return lang[:2]
+    except:
+        return "vi"  # fallback Vietnamese
+
+def translate_to_vietnamese(text):
+    try:
+        res = requests.post(
+            "https://openrouter.ai/api/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+                "Content-Type": "application/json"
+            },
+            json={
+                "model": MODEL,
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": "Translate the following text to natural Vietnamese. Output only the translated text."
+                    },
+                    {"role": "user", "content": text}
+                ]
+            }
+        )
+        return res.json()["choices"][0]["message"]["content"]
+    except:
+        return text
 
 # ---------------------------------------------------
 # API: CHAT
@@ -285,14 +328,43 @@ def chat():
     if not msg:
         return jsonify({"error": "message is required"}), 400
 
-    answer = search_faq(msg)
+    # --------------------------------------------
+    # Step 1: LANGUAGE DETECTION
+    # --------------------------------------------
+    lang = detect_language(msg)
 
-    if not answer:
-        answer = ai_fallback(msg)
+    # Always use Vietnamese internally
+    msg_vi = msg
+    if lang != "vi":
+        msg_vi = translate_to_vietnamese(msg)
 
-    save_history(session_id, msg, answer)
+    # --------------------------------------------
+    # Step 2: SEARCH FAQ using Vietnamese version
+    # --------------------------------------------
+    answer_vi = search_faq(msg_vi)
 
-    return jsonify({"reply": answer})
+    # --------------------------------------------
+    # Step 3: AI fallback – always in Vietnamese
+    # --------------------------------------------
+    if not answer_vi:
+        answer_vi = ai_fallback(msg_vi)
+
+    # Save chat history (store original user message + VN answer)
+    save_history(session_id, msg, answer_vi)
+
+    # --------------------------------------------
+    # Step 4: AUTO-GENERATE NEW FAQ IN VIETNAMESE
+    # --------------------------------------------
+    newfaq = ai_generate_new_faq(msg_vi, answer_vi)
+
+    if newfaq["is_new_faq"]:
+        auto_insert_faq(newfaq["question"], newfaq["answer"])
+
+    return jsonify({
+        "reply": answer_vi,
+        "new_faq": newfaq
+    })
+
 
 
 # ---------------------------------------------------
