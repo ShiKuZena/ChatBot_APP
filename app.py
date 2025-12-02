@@ -306,6 +306,15 @@ def save_history(session_id, user_msg, bot_reply):
 # ---------------------------------------------------
 # API: CHAT
 # ---------------------------------------------------
+def clean_model_output(text):
+    if not text:
+        return text
+    remove_list = ["<s>", "</s>", "[OUT]", "[OUT] ", "[INST]", "[/INST]"]
+    for token in remove_list:
+        text = text.replace(token, "")
+    return text.strip()
+
+
 @app.route("/api/chat", methods=["POST"])
 def chat():
     data = request.json
@@ -318,7 +327,7 @@ def chat():
     # 1. Try match FAQ
     answer = search_faq(msg)
 
-    # 2. AI fallback
+    # 2. AI fallback nếu FAQ không có
     if not answer:
         answer = ai_fallback(msg)
 
@@ -330,16 +339,37 @@ def chat():
     # -----------------------------------------
     try:
         gen = ai_generate_new_faq(msg, answer)
+        print("[auto-learning raw]", gen)
 
-        print("[auto-learning]", gen)  # Debug log
+        # Validate gen phải là dict
+        if not isinstance(gen, dict):
+            print("[auto-learning] ❌ AI trả về không phải JSON dict — bỏ qua")
+            return jsonify({"reply": answer})
 
-        if gen.get("is_new_faq") and gen.get("question") and gen.get("answer"):
+        # Validate đủ key
+        required = ["is_new_faq", "question", "answer"]
+
+        if not all(k in gen for k in required):
+            print("[auto-learning] ❌ AI trả về thiếu key — bỏ qua")
+            return jsonify({"reply": answer})
+
+        # Validate dữ liệu đúng format
+        if (
+            gen.get("is_new_faq") is True
+            and isinstance(gen.get("question"), str)
+            and isinstance(gen.get("answer"), str)
+            and gen["question"].strip() != ""
+            and gen["answer"].strip() != ""
+        ):
             insert_result = auto_insert_faq(gen["question"], gen["answer"])
             print("[FAQ INSERT RESULT]", insert_result)
         else:
             print("[auto-learning] No new FAQ added")
+
     except Exception as e:
         print("[auto-learning-error]", e)
+        traceback.print_exc()
+
     # -----------------------------------------
 
     return jsonify({"reply": answer})
