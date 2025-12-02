@@ -5,6 +5,7 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 import requests
 import re
+import json
 
 from supabase import create_client
 from config import SUPABASE_URL, SUPABASE_KEY, OPENROUTER_API_KEY, MODEL
@@ -103,6 +104,68 @@ def ai_fallback(user_message):
     except Exception as e:
         print("AI error:", e)
         return "Xin lỗi, tôi không thể trả lời câu hỏi này."
+    
+# ---------------------------------------------------
+# SELF-LEARNING: Generate new FAQ
+# ---------------------------------------------------
+def ai_generate_new_faq(user_msg, bot_answer):
+    try:
+        prompt = f"""
+User asked: {user_msg}
+Bot answered: {bot_answer}
+
+Decide if this should be added as a new FAQ entry.
+
+RULES:
+- Only add if the question is useful for many users.
+- No spam, personal info, greetings, jokes.
+- Keep answer short and factual.
+- Output ONLY JSON.
+
+Return JSON exactly like:
+{{
+  "is_new_faq": true/false,
+  "question": "cleaned question",
+  "answer": "clean, short answer"
+}}
+"""
+
+        res = requests.post(
+            "https://openrouter.ai/api/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": MODEL,
+                "messages": [
+                    {"role": "system", "content": "You generate structured JSON only."},
+                    {"role": "user", "content": prompt},
+                ],
+            },
+        )
+
+        raw = res.json()["choices"][0]["message"]["content"]
+
+        return json.loads(raw)
+
+    except Exception as e:
+        print("FAQ generation error:", e)
+        return {"is_new_faq": False}
+
+
+# ---------------------------------------------------
+# AUTO INSERT FAQ
+# ---------------------------------------------------
+def auto_insert_faq(q, a):
+    try:
+        supabase.table("faq").insert({
+            "question": q,
+            "answer": a
+        }).execute()
+        print("AUTO FAQ: Added ->", q)
+    except Exception as e:
+        print("Auto insert FAQ error:", e)
 
 
 # ---------------------------------------------------
