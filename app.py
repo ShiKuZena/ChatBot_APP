@@ -401,15 +401,18 @@ def chat():
             print("[auto-learning] ❌ AI trả về thiếu key — bỏ qua")
             return jsonify({"reply": answer})
 
-        # Validate dữ liệu đúng format và check duplicate
+        # Clean question and answer
         question = clean_model_output(gen.get("question", "").strip())
         faq_answer = clean_model_output(gen.get("answer", "").strip())
+
+        # ✅ Only insert if is_new_faq=True and no similar question exists
         if gen.get("is_new_faq") is True and question and faq_answer:
-            if not faq_exists(question):
+            similar = search_faq(question)  # reuse search_faq for similarity
+            if similar:
+                print("[auto-learning] Similar question already exists, skipping insert")
+            else:
                 insert_result = auto_insert_faq(question, faq_answer)
                 print("[FAQ INSERT RESULT]", insert_result)
-            else:
-                print("[auto-learning] FAQ already exists, skipping insert")
         else:
             print("[auto-learning] No new FAQ added")
 
