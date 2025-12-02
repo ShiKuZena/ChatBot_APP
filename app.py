@@ -80,7 +80,8 @@ def ai_fallback(user_message):
 
     system_text = (
         "You are a helpful Library Assistant.\n"
-        "When answering, USE the FAQ when possible.\n\n"
+        "Use ONLY the FAQ provided below to answer questions.\n"
+        "Do NOT invent new times, dates, or information.\n\n"
         f"{faq_data}"
     )
 
@@ -334,12 +335,12 @@ def search_faq(query):
     if not rows:
         return None
 
-    # 1️⃣ Check exact match first
+    # ✅ Exact match ưu tiên
     for row in rows:
         if row["question"].strip().lower() == query_clean:
             return row["answer"]
 
-    # 2️⃣ Fallback to overlap matching
+    # Fallback overlap matching
     query_words = set(query_clean.split())
     best_match = None
     highest_overlap = 0
@@ -401,8 +402,8 @@ def chat():
             return jsonify({"reply": answer})
 
         # Validate dữ liệu đúng format và check duplicate
-        question = gen.get("question", "").strip()
-        faq_answer = gen.get("answer", "").strip()
+        question = clean_model_output(gen.get("question", "").strip())
+        faq_answer = clean_model_output(gen.get("answer", "").strip())
         if gen.get("is_new_faq") is True and question and faq_answer:
             if not faq_exists(question):
                 insert_result = auto_insert_faq(question, faq_answer)
