@@ -314,7 +314,53 @@ def clean_model_output(text):
         text = text.replace(token, "")
     return text.strip()
 
+def faq_exists(question):
+    question_clean = question.strip().lower()
+    try:
+        rows = supabase.table("faq").select("question").execute().data
+        for row in rows:
+            if row["question"].strip().lower() == question_clean:
+                return True
+    except Exception as e:
+        print("[faq_exists] error:", e)
+    return False
 
+def search_faq(query):
+    query_clean = re.sub(r"[^\w\s]", "", query.lower()).strip()
+    if not query_clean:
+        return None
+
+    rows = supabase.table("faq").select("*").execute().data
+    if not rows:
+        return None
+
+    # 1️⃣ Check exact match first
+    for row in rows:
+        if row["question"].strip().lower() == query_clean:
+            return row["answer"]
+
+    # 2️⃣ Fallback to overlap matching
+    query_words = set(query_clean.split())
+    best_match = None
+    highest_overlap = 0
+
+    for row in rows:
+        faq_clean = re.sub(r"[^\w\s]", "", row["question"].lower())
+        faq_words = set(faq_clean.split())
+        total_words = len(faq_words)
+        if total_words == 0:
+            continue
+        overlap = len(query_words & faq_words)
+        ratio = overlap / total_words
+        if ratio > highest_overlap and ratio >= 0.7:
+            highest_overlap = ratio
+            best_match = row["answer"]
+
+    return best_match
+
+# -------------------------
+# API: CHAT (updated)
+# -------------------------
 @app.route("/api/chat", methods=["POST"])
 def chat():
     data = request.json
@@ -326,16 +372,18 @@ def chat():
 
     # 1. Try match FAQ
     answer = search_faq(msg)
+    answer = clean_model_output(answer) if answer else None
 
     # 2. AI fallback nếu FAQ không có
     if not answer:
         answer = ai_fallback(msg)
+        answer = clean_model_output(answer)
 
     # 3. Save history
     save_history(session_id, msg, answer)
 
     # -----------------------------------------
-    # 4. 🔥 SELF-LEARNING — Generate new FAQ
+    # 4. 🔥 SELF-LEARNING — Generate new FAQ (only if not exists)
     # -----------------------------------------
     try:
         gen = ai_generate_new_faq(msg, answer)
@@ -348,29 +396,25 @@ def chat():
 
         # Validate đủ key
         required = ["is_new_faq", "question", "answer"]
-
         if not all(k in gen for k in required):
             print("[auto-learning] ❌ AI trả về thiếu key — bỏ qua")
             return jsonify({"reply": answer})
 
-        # Validate dữ liệu đúng format
-        if (
-            gen.get("is_new_faq") is True
-            and isinstance(gen.get("question"), str)
-            and isinstance(gen.get("answer"), str)
-            and gen["question"].strip() != ""
-            and gen["answer"].strip() != ""
-        ):
-            insert_result = auto_insert_faq(gen["question"], gen["answer"])
-            print("[FAQ INSERT RESULT]", insert_result)
+        # Validate dữ liệu đúng format và check duplicate
+        question = gen.get("question", "").strip()
+        faq_answer = gen.get("answer", "").strip()
+        if gen.get("is_new_faq") is True and question and faq_answer:
+            if not faq_exists(question):
+                insert_result = auto_insert_faq(question, faq_answer)
+                print("[FAQ INSERT RESULT]", insert_result)
+            else:
+                print("[auto-learning] FAQ already exists, skipping insert")
         else:
             print("[auto-learning] No new FAQ added")
 
     except Exception as e:
         print("[auto-learning-error]", e)
         traceback.print_exc()
-
-    # -----------------------------------------
 
     return jsonify({"reply": answer})
 
