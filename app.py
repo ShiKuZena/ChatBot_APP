@@ -102,8 +102,6 @@ def ai_fallback(user_message):
             timeout=15,
         )
 
-        # Log raw for debugging
-        print("[ai_fallback] status:", getattr(res, "status_code", None))
         try:
             print("[ai_fallback] raw:", res.text[:2000])
         except:
@@ -111,7 +109,11 @@ def ai_fallback(user_message):
 
         result = res.json()
         content = result.get("choices", [{}])[0].get("message", {}).get("content")
-        return content or "Xin lỗi, tôi không thể trả lời câu hỏi này."
+
+        # ⚠ Ensure always string
+        if not content or not content.strip():
+            return "Xin lỗi, tôi không thể trả lời câu hỏi này."
+        return content.strip()
     except Exception as e:
         print("AI error:", e)
         traceback.print_exc()
@@ -424,9 +426,9 @@ def chat():
             answer = clean_model_output(answer)
 
     # 3️⃣ If still no answer, AI fallback without website
-    if not answer:
+    if not answer or not answer.strip():
         answer = ai_fallback(msg)
-        answer = clean_model_output(answer)
+        answer = clean_model_output(answer) or "Xin lỗi, tôi không thể trả lời câu hỏi này."
 
     # 4️⃣ Save chat history
     save_history(session_id, msg, answer)
