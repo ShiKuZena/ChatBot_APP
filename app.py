@@ -11,7 +11,7 @@ import traceback
 
 from supabase import create_client
 from config import SUPABASE_URL, SUPABASE_KEY, OPENROUTER_API_KEY, MODEL
-
+from bs4 import BeautifulSoup
 # ---------------------------------------------------
 # INIT SUPABASE
 # ---------------------------------------------------
@@ -362,6 +362,42 @@ def search_faq(query):
 # -------------------------
 # API: CHAT (updated)
 # -------------------------
+def fetch_website_text(url="https://libraryweb-ntw0ixtoo-shikuzenas-projects.vercel.app/"):
+    """
+    Fetch and extract visible text from the website.
+    """
+    try:
+        res = requests.get(url, timeout=10)
+        if res.status_code != 200:
+            return None
+
+        soup = BeautifulSoup(res.text, "lxml")
+
+        # remove scripts, styles
+        for s in soup(["script", "style", "noscript"]):
+            s.decompose()
+
+        text = soup.get_text(separator="\n", strip=True)
+        # optional: limit length
+        return text[:3500]  # prevent huge text
+    except Exception as e:
+        print("[fetch_website_text] error:", e)
+        return None
+
+
+def is_website_related(msg):
+    """
+    Detect if the user query is related to the website content.
+    You can expand keywords here.
+    """
+    keywords = [
+        "thư viện", "library", "mượn sách", "giờ mở cửa", 
+        "sách", "tài liệu", "trang web", "website"
+    ]
+    msg_lower = msg.lower()
+    return any(k in msg_lower for k in keywords)
+
+
 @app.route("/api/chat", methods=["POST"])
 def chat():
     data = request.json
@@ -371,50 +407,45 @@ def chat():
     if not msg:
         return jsonify({"error": "message is required"}), 400
 
-    # 1. Try match FAQ
+    answer = None
+
+    # 1️⃣ Try search FAQ first
     answer = search_faq(msg)
     answer = clean_model_output(answer) if answer else None
 
-    # 2. AI fallback nếu FAQ không có
+    # 2️⃣ If FAQ empty, check website
+    if not answer and is_website_related(msg):
+        website_text = fetch_website_text()
+        if website_text:
+            # Ask AI to generate answer based on website content
+            answer = ai_fallback(
+                f"Use ONLY the following website content to answer the question:\n\n{website_text}\n\nQuestion: {msg}"
+            )
+            answer = clean_model_output(answer)
+
+    # 3️⃣ If still no answer, AI fallback without website
     if not answer:
         answer = ai_fallback(msg)
         answer = clean_model_output(answer)
 
-    # 3. Save history
+    # 4️⃣ Save chat history
     save_history(session_id, msg, answer)
 
-    # -----------------------------------------
-    # 4. 🔥 SELF-LEARNING — Generate new FAQ (only if not exists)
-    # -----------------------------------------
+    # 5️⃣ SELF-LEARNING — generate new FAQ
     try:
         gen = ai_generate_new_faq(msg, answer)
         print("[auto-learning raw]", gen)
 
-        # Validate gen phải là dict
-        if not isinstance(gen, dict):
-            print("[auto-learning] ❌ AI trả về không phải JSON dict — bỏ qua")
-            return jsonify({"reply": answer})
-
-        # Validate đủ key
-        required = ["is_new_faq", "question", "answer"]
-        if not all(k in gen for k in required):
-            print("[auto-learning] ❌ AI trả về thiếu key — bỏ qua")
-            return jsonify({"reply": answer})
-
-        # Clean question and answer
-        question = clean_model_output(gen.get("question", "").strip())
-        faq_answer = clean_model_output(gen.get("answer", "").strip())
-
-        # ✅ Only insert if is_new_faq=True and no similar question exists
-        if gen.get("is_new_faq") is True and question and faq_answer:
-            similar = search_faq(question)  # reuse search_faq for similarity
-            if similar:
-                print("[auto-learning] Similar question already exists, skipping insert")
-            else:
-                insert_result = auto_insert_faq(question, faq_answer)
-                print("[FAQ INSERT RESULT]", insert_result)
-        else:
-            print("[auto-learning] No new FAQ added")
+        if isinstance(gen, dict):
+            required = ["is_new_faq", "question", "answer"]
+            if all(k in gen for k in required):
+                question = clean_model_output(gen.get("question", "").strip())
+                faq_answer = clean_model_output(gen.get("answer", "").strip())
+                if gen.get("is_new_faq") and question and faq_answer:
+                    similar = search_faq(question)
+                    if not similar:
+                        insert_result = auto_insert_faq(question, faq_answer)
+                        print("[FAQ INSERT RESULT]", insert_result)
 
     except Exception as e:
         print("[auto-learning-error]", e)
