@@ -312,7 +312,7 @@ def save_history(session_id, user_msg, bot_reply):
 def clean_model_output(text):
     if not text:
         return text
-    remove_list = ["<s>", "</s>", "[OUT]", "[OUT] ", "[INST]", "[/INST]"]
+    remove_list = ["<s>", "</s>", "[OUT]", "[/OUT] ", "[INST]", "[/INST]"]
     for token in remove_list:
         text = text.replace(token, "")
     return text.strip()
