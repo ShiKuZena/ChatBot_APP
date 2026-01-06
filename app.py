@@ -137,10 +137,14 @@ Bot answered: {bot_answer}
 Decide if this should be added as a new FAQ entry.
 
 RULES:
-- Only add if the question is useful for many users.
-- Do NOT add greetings, spam, personal data, emoji if unnecessary or jokes.
-- Keep the answer short (1-2 sentences).
-- Output JSON only (no extra commentary).
+- If the user greets, you may respond with a brief greeting, but do not store it.
+- Only store Q/A if it is broadly reusable, factual, and not specific to one user’s situation.
+- Never store personal data, secrets, account details, private identifiers, or anything sensitive.
+- Never store illegal, harmful, or unsafe instructions; store safe alternatives if helpful.
+- Reject spam, promos, profanity-only messages, memes, and low-effort content.
+- Keep stored answers concise (1–2 sentences), neutral, and actionable.
+- If the user’s question depends on missing context, ask a clarifying question instead of storing.
+- Output JSON only.
 
 Return JSON exactly like:
 {{"is_new_faq": true/false, "question": "clean question", "answer": "short answer"}}
