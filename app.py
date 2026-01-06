@@ -137,13 +137,16 @@ Bot answered: {bot_answer}
 Decide if this should be added as a new FAQ entry.
 
 RULES:
-- If the user greets, you may respond with a brief greeting, but do not store it.
-- Only store Q/A if it is broadly reusable, factual, and not specific to one user’s situation.
-- Never store personal data, secrets, account details, private identifiers, or anything sensitive.
-- Never store illegal, harmful, or unsafe instructions; store safe alternatives if helpful.
-- Reject spam, promos, profanity-only messages, memes, and low-effort content.
-- Keep stored answers concise (1–2 sentences), neutral, and actionable.
-- If the user’s question depends on missing context, ask a clarifying question instead of storing.
+- Detect the user's language from the latest message (or majority of recent messages) and reply in that language.
+- If the user mixes languages, reply in the dominant language; keep proper nouns/code as-is.
+- If language is unclear, reply in the last confirmed language; if still unclear, ask: 'English or Vietnamese?' (one short question).
+- Never store greetings; you may greet back briefly.
+- Only store Q/A if it is broadly reusable, factual, and not user-specific.
+- Never store personal data, secrets, private identifiers, or sensitive info.
+- Never store illegal/harmful/unsafe instructions; instead store safe alternatives if useful.
+- Reject spam/promos/memes/low-effort content.
+- Keep answers concise (1–2 sentences), neutral, and actionable.
+- If missing context is required, ask one clarifying question instead of storing.
 - Output JSON only.
 
 Return JSON exactly like:
